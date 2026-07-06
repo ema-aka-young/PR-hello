@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="en" class="bg-gray-950 text-gray-100">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PR Hell0 — openshift-virtualization-tests</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    @keyframes pulse-dot { 0%,100%{opacity:.4} 50%{opacity:1} }
+    .pulse-dot { animation: pulse-dot 1.5s ease-in-out infinite; }
+  </style>
+</head>
+<body class="min-h-screen">
+
+  <!-- Header -->
+  <header class="sticky top-0 z-30 bg-gray-900/80 backdrop-blur border-b border-gray-800">
+    <div class="max-w-[1600px] mx-auto px-4 py-3 flex items-center justify-between gap-4 flex-wrap">
+      <div>
+        <h1 class="text-lg font-semibold tracking-tight">PR Dashboard</h1>
+        <p id="repo-name" class="text-xs text-gray-400"></p>
+      </div>
+      <div class="flex items-center gap-4 text-sm">
+        <span id="total-badge" class="hidden rounded-full bg-gray-800 px-3 py-1 text-xs font-medium"></span>
+        <input id="search" type="text" placeholder="Filter PRs…"
+          class="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 w-56" />
+        <button id="refresh-btn" title="Refresh"
+          class="p-1.5 rounded-lg hover:bg-gray-800 transition-colors">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round"
+              d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+          </svg>
+        </button>
+        <span id="last-updated" class="text-xs text-gray-500"></span>
+      </div>
+    </div>
+  </header>
+
+  <!-- Summary strip -->
+  <div id="summary-strip" class="hidden max-w-[1600px] mx-auto px-4 py-2 flex gap-3 flex-wrap text-xs"></div>
+
+  <!-- SIG filter bar -->
+  <div id="sig-filter-bar" class="hidden max-w-[1600px] mx-auto px-4 py-2 flex gap-2 flex-wrap items-center">
+    <span class="text-xs text-gray-500 mr-1">SIG:</span>
+  </div>
+
+  <!-- Main content -->
+  <main id="dashboard" class="max-w-[1600px] mx-auto px-4 py-6">
+    <!-- Loading state -->
+    <div id="loading" class="flex flex-col items-center justify-center py-32 gap-3">
+      <div class="w-8 h-8 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin"></div>
+      <p class="text-gray-400 text-sm">Loading PRs from GitHub…</p>
+    </div>
+    <!-- Error state -->
+    <div id="error" class="hidden flex flex-col items-center py-32 gap-3 text-center">
+      <p class="text-red-400 font-medium">Failed to load dashboard</p>
+      <p id="error-msg" class="text-gray-500 text-sm max-w-md"></p>
+      <button onclick="loadDashboard()"
+        class="mt-2 px-4 py-1.5 bg-indigo-600 hover:bg-indigo-500 rounded-lg text-sm transition-colors">
+        Retry
+      </button>
+    </div>
+    <!-- Content -->
+    <div id="content" class="hidden space-y-8"></div>
+  </main>
+
+<script>
+const API_BASE = window.location.origin;
+let allData = null;
+let activeSigs = new Set();
+let activeStatusFilter = null;
+
+const SEVERITY_STYLES = {
+  red:    'bg-red-900/60 text-red-300 border border-red-800',
+  orange: 'bg-orange-900/50 text-orange-300 border border-orange-800',
+  yellow: 'bg-yellow-900/50 text-yellow-300 border border-yellow-800',
+  blue:   'bg-blue-900/50 text-blue-300 border border-blue-800',
+  green:  'bg-emerald-900/50 text-emerald-300 border border-emerald-800',
+};
+
+function severityPriority(s) {
+  return { red: 0, orange: 1, yellow: 2, blue: 3 }[s] ?? 4;
+}
+
+function mergeReadinessScore(pr) {
+  if (pr.can_be_merged) return 0;
+  if (pr.ready) return 1;
+  return 2 + pr.blockers.length;
+}
+
+function sortByMergeReadiness(prs) {
+  return [...prs].sort((a, b) => {
+    const sa = mergeReadinessScore(a);
+    const sb = mergeReadinessScore(b);
+    if (sa !== sb) return sa - sb;
+    return new Date(b.updated_at) - new Date(a.updated_at);
+  });
+}
+
+const STATUS_FILTERS = {
+  can_merge:       p => p.can_be_merged,
+  ready:           p => p.ready,
+  ci_failing:      p => p.blockers.some(b => b.severity === 'red'),
+  ci_pending:      p => p.blockers.some(b => b.severity === 'orange'),
+  needs_lgtm:      p => p.blockers.some(b => b.key === 'needs_lgtm'),
+  needs_approval:  p => p.blockers.some(b => b.key === 'needs_approval'),
+};
+
+function timeAgo(dateStr) {
+  const seconds = Math.floor((Date.now() - new Date(dateStr).getTime()) / 1000);
+  if (seconds < 60) return 'just now';
+  if (seconds < 3600) return Math.floor(seconds / 60) + 'm ago';
+  if (seconds < 86400) return Math.floor(seconds / 3600) + 'h ago';
+  return Math.floor(seconds / 86400) + 'd ago';
+}
+
+function escapeHtml(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+function renderBadge(blocker) {
+  const style = SEVERITY_STYLES[blocker.severity] || SEVERITY_STYLES.blue;
+  return `<span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium ${style}">${escapeHtml(blocker.label)}</span>`;
+}
+
+function renderCard(pr) {
+  const mergeBadge = pr.can_be_merged
+    ? `<span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold bg-emerald-600 text-white">Can Be Merged</span> `
+    : '';
+  const badges = pr.ready
+    ? `<span class="${SEVERITY_STYLES.green} inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium">Ready to Merge</span>`
+    : pr.blockers.map(renderBadge).join(' ');
+
+  const ciDot = {
+    success: 'bg-emerald-400',
+    pending: 'bg-yellow-400 pulse-dot',
+    failure: 'bg-red-400',
+  }[pr.ci_state] || 'bg-gray-500';
+
+  const borderClass = pr.can_be_merged
+    ? 'border-emerald-700 bg-emerald-950/30 hover:border-emerald-500'
+    : 'border-gray-800 bg-gray-900 hover:border-gray-600';
+
+  return `
+    <a href="${escapeHtml(pr.url)}" target="_blank" rel="noopener"
+       class="block rounded-xl border ${borderClass} p-4 hover:bg-gray-900/80 transition-colors group">
+      <div class="flex items-start gap-3">
+        <img src="${escapeHtml(pr.author_avatar)}" alt="" class="w-8 h-8 rounded-full mt-0.5 ring-1 ring-gray-700" />
+        <div class="flex-1 min-w-0">
+          <div class="flex items-center gap-2 mb-1">
+            <span class="text-xs text-gray-500 font-mono">#${pr.number}</span>
+            ${pr.draft ? '<span class="text-[10px] bg-gray-800 text-gray-400 px-1.5 py-0.5 rounded">Draft</span>' : ''}
+            <span class="w-2 h-2 rounded-full ${ciDot} shrink-0" title="CI: ${pr.ci_state}"></span>
+          </div>
+          <p class="text-sm font-medium leading-snug text-gray-100 group-hover:text-white truncate">${escapeHtml(pr.title)}</p>
+          <div class="flex items-center gap-2 mt-1 text-xs text-gray-500">
+            <span>${escapeHtml(pr.author)}</span>
+            <span>·</span>
+            <span>updated ${timeAgo(pr.updated_at)}</span>
+            <span>·</span>
+            <span>LGTM ${pr.lgtm_count}/2</span>
+            <span>·</span>
+            <span>${pr.approved ? '✓ Approved' : '✗ Not approved'}</span>
+          </div>
+          <div class="flex flex-wrap gap-1.5 mt-2">${mergeBadge}${badges}</div>
+        </div>
+      </div>
+    </a>`;
+}
+
+function renderSigSection(sigName, prs) {
+  const readyCount = prs.filter(p => p.ready).length;
+  const failCount = prs.filter(p => p.blockers.some(b => b.severity === 'red')).length;
+
+  return `
+    <section>
+      <div class="flex items-center gap-3 mb-3">
+        <h2 class="text-base font-semibold text-gray-200">${escapeHtml(sigName)}</h2>
+        <span class="text-xs text-gray-500">${prs.length} PR${prs.length !== 1 ? 's' : ''}</span>
+        ${readyCount > 0 ? `<span class="text-[11px] ${SEVERITY_STYLES.green} px-2 py-0.5 rounded">${readyCount} ready</span>` : ''}
+        ${failCount > 0 ? `<span class="text-[11px] ${SEVERITY_STYLES.red} px-2 py-0.5 rounded">${failCount} failing</span>` : ''}
+      </div>
+      <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        ${sortByMergeReadiness(prs).map(renderCard).join('')}
+      </div>
+    </section>`;
+}
+
+function renderSummaryStrip(data) {
+  const strip = document.getElementById('summary-strip');
+  const allPrs = Object.values(data.sig_groups).flat();
+  const uniquePrs = [...new Map(allPrs.map(p => [p.number, p])).values()];
+
+  const counts = {
+    can_merge:      uniquePrs.filter(STATUS_FILTERS.can_merge).length,
+    ready:          uniquePrs.filter(STATUS_FILTERS.ready).length,
+    ci_failing:     uniquePrs.filter(STATUS_FILTERS.ci_failing).length,
+    ci_pending:     uniquePrs.filter(STATUS_FILTERS.ci_pending).length,
+    needs_lgtm:     uniquePrs.filter(STATUS_FILTERS.needs_lgtm).length,
+    needs_approval: uniquePrs.filter(STATUS_FILTERS.needs_approval).length,
+  };
+
+  const active = (key) => activeStatusFilter === key ? 'ring-2 ring-white ring-offset-1 ring-offset-gray-950' : '';
+
+  const items = [
+    { key: 'can_merge',      label: `${counts.can_merge} can be merged`,  style: 'bg-emerald-600 text-white font-semibold' },
+    { key: 'ready',          label: `${counts.ready} ready`,              style: SEVERITY_STYLES.green },
+    { key: 'ci_failing',     label: `${counts.ci_failing} CI failing`,    style: SEVERITY_STYLES.red },
+    { key: 'ci_pending',     label: `${counts.ci_pending} CI pending`,    style: SEVERITY_STYLES.orange },
+    { key: 'needs_lgtm',     label: `${counts.needs_lgtm} need LGTM`,    style: SEVERITY_STYLES.yellow },
+    { key: 'needs_approval', label: `${counts.needs_approval} need maintainer approval`, style: SEVERITY_STYLES.blue },
+  ];
+
+  strip.innerHTML = items.map(it =>
+    `<button data-status="${it.key}" class="px-2 py-0.5 rounded cursor-pointer hover:opacity-80 transition-all ${it.style} ${active(it.key)}">${it.label}</button>`
+  ).join('');
+  strip.classList.remove('hidden');
+
+  strip.querySelectorAll('button[data-status]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const key = btn.dataset.status;
+      activeStatusFilter = activeStatusFilter === key ? null : key;
+      renderSummaryStrip(allData);
+      render(allData, document.getElementById('search').value);
+    });
+  });
+}
+
+function renderSigFilterBar(data) {
+  const bar = document.getElementById('sig-filter-bar');
+  const sigs = Object.keys(data.sig_groups);
+  const allActive = activeSigs.size === 0;
+
+  const allBtn = `<button data-sig="__all__"
+    class="px-2.5 py-1 rounded-lg text-xs font-medium transition-colors ${
+      allActive
+        ? 'bg-indigo-600 text-white'
+        : 'bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-gray-200'
+    }">All (${sigs.length})</button>`;
+
+  const sigBtns = sigs.map(sig => {
+    const count = data.sig_groups[sig].length;
+    const active = activeSigs.has(sig);
+    return `<button data-sig="${escapeHtml(sig)}"
+      class="px-2.5 py-1 rounded-lg text-xs font-medium transition-colors ${
+        active
+          ? 'bg-indigo-600 text-white'
+          : 'bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-gray-200'
+      }">${escapeHtml(sig)} <span class="opacity-60">${count}</span></button>`;
+  }).join('');
+
+  bar.innerHTML = `<span class="text-xs text-gray-500 mr-1">SIG:</span>${allBtn}${sigBtns}`;
+  bar.classList.remove('hidden');
+
+  bar.querySelectorAll('button[data-sig]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const sig = btn.dataset.sig;
+      if (sig === '__all__') {
+        activeSigs.clear();
+      } else {
+        if (activeSigs.has(sig)) {
+          activeSigs.delete(sig);
+        } else {
+          activeSigs.add(sig);
+        }
+      }
+      renderSigFilterBar(allData);
+      render(allData, document.getElementById('search').value);
+    });
+  });
+}
+
+function filterPrs(prs, term) {
+  let result = prs;
+  if (term) {
+    result = result.filter(p =>
+      p.title.toLowerCase().includes(term) ||
+      p.author.toLowerCase().includes(term) ||
+      String(p.number).includes(term) ||
+      p.labels.some(l => l.toLowerCase().includes(term)));
+  }
+  if (activeStatusFilter && STATUS_FILTERS[activeStatusFilter]) {
+    result = result.filter(STATUS_FILTERS[activeStatusFilter]);
+  }
+  return result;
+}
+
+function render(data, filter = '') {
+  const container = document.getElementById('content');
+  const term = filter.toLowerCase().trim();
+  let html = '';
+
+  const allPrs = Object.values(data.sig_groups).flat();
+  const uniqueMergeable = [...new Map(
+    allPrs.filter(p => p.can_be_merged).map(p => [p.number, p])
+  ).values()];
+  const filteredMergeable = filterPrs(uniqueMergeable, term)
+    .filter(p => activeSigs.size === 0 || p.sigs.some(s => activeSigs.has(s)));
+
+  if (filteredMergeable.length > 0) {
+    html += `
+      <section class="rounded-xl border border-emerald-800 bg-emerald-950/20 p-5">
+        <div class="flex items-center gap-3 mb-3">
+          <h2 class="text-base font-semibold text-emerald-300">Ready to Merge</h2>
+          <span class="text-xs bg-emerald-600 text-white px-2 py-0.5 rounded font-semibold">${filteredMergeable.length}</span>
+          <span class="text-xs text-emerald-400/60">These PRs have the can-be-merged label</span>
+        </div>
+        <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          ${sortByMergeReadiness(filteredMergeable).map(renderCard).join('')}
+        </div>
+      </section>`;
+  }
+
+  const sections = Object.entries(data.sig_groups)
+    .filter(([sig]) => activeSigs.size === 0 || activeSigs.has(sig))
+    .map(([sig, prs]) => {
+      const filtered = filterPrs(prs, term);
+      return filtered.length > 0 ? renderSigSection(sig, filtered) : '';
+    }).filter(Boolean);
+
+  html += sections.join('');
+
+  if (!html) {
+    container.innerHTML = '<p class="text-gray-500 text-center py-16">No PRs match your filter.</p>';
+  } else {
+    container.innerHTML = html;
+  }
+}
+
+async function loadDashboard() {
+  const loading = document.getElementById('loading');
+  const error = document.getElementById('error');
+  const content = document.getElementById('content');
+
+  loading.classList.remove('hidden');
+  error.classList.add('hidden');
+  content.classList.add('hidden');
+
+  try {
+    const resp = await fetch(`${API_BASE}/api/dashboard`);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${resp.statusText}`);
+    allData = await resp.json();
+
+    document.getElementById('repo-name').textContent = allData.repo;
+    const badge = document.getElementById('total-badge');
+    badge.textContent = `${allData.total_open} open`;
+    badge.classList.remove('hidden');
+
+    renderSummaryStrip(allData);
+    renderSigFilterBar(allData);
+    render(allData, document.getElementById('search').value);
+
+    loading.classList.add('hidden');
+    content.classList.remove('hidden');
+    document.getElementById('last-updated').textContent = 'Updated ' + new Date().toLocaleTimeString();
+  } catch (err) {
+    loading.classList.add('hidden');
+    error.classList.remove('hidden');
+    document.getElementById('error-msg').textContent = err.message;
+  }
+}
+
+document.getElementById('search').addEventListener('input', (e) => {
+  if (allData) render(allData, e.target.value);
+});
+
+document.getElementById('refresh-btn').addEventListener('click', loadDashboard);
+
+loadDashboard();
+</script>
+</body>
+</html>
