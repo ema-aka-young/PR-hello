@@ -200,6 +200,7 @@ async def _enrich_pr(client: httpx.AsyncClient, pr: dict) -> dict[str, Any]:
         "created_at": pr["created_at"],
         "updated_at": pr["updated_at"],
         "draft": pr.get("draft", False),
+        "wip": "wip" in [l.lower() for l in label_names],
         "labels": label_names,
         "sigs": sigs if sigs else ["Unassigned SIG"],
         "lgtm_count": lgtm_count,

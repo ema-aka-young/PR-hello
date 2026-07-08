@@ -23,6 +23,11 @@
         <span id="total-badge" class="hidden rounded-full bg-gray-800 px-3 py-1 text-xs font-medium"></span>
         <input id="search" type="text" placeholder="Filter PRs…"
           class="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 w-56" />
+        <label class="flex items-center gap-1.5 text-xs text-gray-400 cursor-pointer select-none">
+          <input id="show-wip" type="checkbox"
+            class="w-3.5 h-3.5 rounded border-gray-600 bg-gray-800 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0 cursor-pointer" />
+          Show Draft / WIP
+        </label>
         <button id="refresh-btn" title="Refresh"
           class="p-1.5 rounded-lg hover:bg-gray-800 transition-colors">
           <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
@@ -267,8 +272,16 @@ function renderSigFilterBar(data) {
   });
 }
 
+function isWipOrDraft(pr) {
+  return pr.draft || pr.wip;
+}
+
 function filterPrs(prs, term) {
   let result = prs;
+  const showWip = document.getElementById('show-wip').checked;
+  if (!showWip) {
+    result = result.filter(p => !isWipOrDraft(p));
+  }
   if (term) {
     result = result.filter(p =>
       p.title.toLowerCase().includes(term) ||
@@ -359,6 +372,10 @@ async function loadDashboard() {
 
 document.getElementById('search').addEventListener('input', (e) => {
   if (allData) render(allData, e.target.value);
+});
+
+document.getElementById('show-wip').addEventListener('change', () => {
+  if (allData) render(allData, document.getElementById('search').value);
 });
 
 document.getElementById('refresh-btn').addEventListener('click', loadDashboard);
