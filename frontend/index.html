@@ -85,8 +85,7 @@ function severityPriority(s) {
 
 function mergeReadinessScore(pr) {
   if (pr.can_be_merged) return 0;
-  if (pr.ready) return 1;
-  return 2 + pr.blockers.length;
+  return 1 + pr.blockers.length;
 }
 
 function sortByMergeReadiness(prs) {
@@ -100,7 +99,6 @@ function sortByMergeReadiness(prs) {
 
 const STATUS_FILTERS = {
   can_merge:       p => p.can_be_merged,
-  ready:           p => p.ready,
   blocked:         p => p.blockers.some(b => b.key === 'wip' || b.key === 'hold' || b.key === 'has_conflicts'),
   ci_failing:      p => p.blockers.some(b => b.severity === 'red'),
   ci_pending:      p => p.blockers.some(b => b.severity === 'orange'),
@@ -129,11 +127,8 @@ function renderBadge(blocker) {
 }
 
 function renderCard(pr) {
-  const mergeBadge = pr.can_be_merged
-    ? `<span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold bg-emerald-600 text-white">Can Be Merged</span> `
-    : '';
-  const badges = pr.ready
-    ? `<span class="${SEVERITY_STYLES.green} inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium">Ready to Merge</span>`
+  const badges = pr.can_be_merged
+    ? `<span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold bg-emerald-600 text-white">Can Be Merged</span>`
     : pr.blockers.map(renderBadge).join(' ');
 
   const ciDot = {
@@ -167,14 +162,14 @@ function renderCard(pr) {
             <span>·</span>
             <span>${pr.approved ? '✓ Approved' : '✗ Not approved'}</span>
           </div>
-          <div class="flex flex-wrap gap-1.5 mt-2">${mergeBadge}${badges}</div>
+          <div class="flex flex-wrap gap-1.5 mt-2">${badges}</div>
         </div>
       </div>
     </a>`;
 }
 
 function renderSigSection(sigName, prs) {
-  const readyCount = prs.filter(p => p.ready).length;
+  const readyCount = prs.filter(p => p.can_be_merged).length;
   const failCount = prs.filter(p => p.blockers.some(b => b.severity === 'red')).length;
 
   return `
@@ -182,7 +177,7 @@ function renderSigSection(sigName, prs) {
       <div class="flex items-center gap-3 mb-3">
         <h2 class="text-base font-semibold text-gray-200">${escapeHtml(sigName)}</h2>
         <span class="text-xs text-gray-500">${prs.length} PR${prs.length !== 1 ? 's' : ''}</span>
-        ${readyCount > 0 ? `<span class="text-[11px] ${SEVERITY_STYLES.green} px-2 py-0.5 rounded">${readyCount} ready</span>` : ''}
+        ${readyCount > 0 ? `<span class="text-[11px] bg-emerald-600 text-white px-2 py-0.5 rounded font-semibold">${readyCount} can merge</span>` : ''}
         ${failCount > 0 ? `<span class="text-[11px] ${SEVERITY_STYLES.red} px-2 py-0.5 rounded">${failCount} failing</span>` : ''}
       </div>
       <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -205,7 +200,6 @@ function renderSummaryStrip(data) {
 
   const items = [
     { key: 'can_merge',      label: `${counts.can_merge} can be merged`,       style: 'bg-emerald-600 text-white font-semibold' },
-    { key: 'ready',          label: `${counts.ready} ready`,                   style: SEVERITY_STYLES.green },
     { key: 'blocked',        label: `${counts.blocked} blocked`,               style: SEVERITY_STYLES.gray },
     { key: 'ci_failing',     label: `${counts.ci_failing} CI failing`,         style: SEVERITY_STYLES.red },
     { key: 'ci_pending',     label: `${counts.ci_pending} CI pending`,         style: SEVERITY_STYLES.orange },
@@ -304,9 +298,9 @@ function render(data, filter = '') {
     html += `
       <section class="rounded-xl border border-emerald-800 bg-emerald-950/20 p-5">
         <div class="flex items-center gap-3 mb-3">
-          <h2 class="text-base font-semibold text-emerald-300">Ready to Merge</h2>
+          <h2 class="text-base font-semibold text-emerald-300">Can Be Merged</h2>
           <span class="text-xs bg-emerald-600 text-white px-2 py-0.5 rounded font-semibold">${filteredMergeable.length}</span>
-          <span class="text-xs text-emerald-400/60">These PRs have the can-be-merged label</span>
+          <span class="text-xs text-emerald-400/60">All merge conditions met</span>
         </div>
         <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           ${sortByMergeReadiness(filteredMergeable).map(renderCard).join('')}

@@ -36,10 +36,6 @@ async def _get_all_pages(client: httpx.AsyncClient, url: str, params: dict | Non
     return results
 
 
-async def _fetch_reviews(client: httpx.AsyncClient, pr_number: int) -> list[dict]:
-    url = f"{GITHUB_API}/repos/{REPO}/pulls/{pr_number}/reviews"
-    return await _get_all_pages(client, url)
-
 
 async def _fetch_commit_status(client: httpx.AsyncClient, sha: str) -> dict:
     url = f"{GITHUB_API}/repos/{REPO}/commits/{sha}/status"
@@ -71,16 +67,10 @@ def _count_lgtm_labels(labels: list[dict]) -> int:
     return count
 
 
-def _has_maintainer_approval(reviews: list[dict], labels: list[dict]) -> bool:
-    if any(lb["name"].lower().startswith("approved-") for lb in labels):
-        return True
-    latest_by_user: dict[str, str] = {}
-    for r in reviews:
-        user = r.get("user", {}).get("login", "")
-        state = r.get("state", "")
-        if state in ("APPROVED", "CHANGES_REQUESTED", "DISMISSED"):
-            latest_by_user[user] = state
-    return any(s == "APPROVED" for s in latest_by_user.values())
+def _has_maintainer_approval(missing_approvers: list[str], labels: list[dict]) -> bool:
+    if missing_approvers:
+        return False
+    return any(lb["name"].lower().startswith("approved-") for lb in labels)
 
 
 META_CHECKS = {"can-be-merged"}
@@ -183,8 +173,7 @@ async def _enrich_pr(client: httpx.AsyncClient, pr: dict) -> dict[str, Any]:
     pr_number = pr["number"]
     sha = pr["head"]["sha"]
 
-    reviews, combined_status, check_runs = await asyncio.gather(
-        _fetch_reviews(client, pr_number),
+    combined_status, check_runs = await asyncio.gather(
         _fetch_commit_status(client, sha),
         _fetch_check_runs(client, sha),
     )
@@ -192,9 +181,9 @@ async def _enrich_pr(client: httpx.AsyncClient, pr: dict) -> dict[str, Any]:
     labels = pr.get("labels", [])
     label_names = [lb["name"] for lb in labels]
     lgtm_count = _count_lgtm_labels(labels)
-    approved = _has_maintainer_approval(reviews, labels)
     ci_state = _resolve_ci_state(combined_status, check_runs)
     missing_approvers = _extract_missing_approvers(check_runs)
+    approved = _has_maintainer_approval(missing_approvers, labels)
     mergeable = pr.get("mergeable", True) is not False
     blockers = _compute_blockers(
         lgtm_count, approved, ci_state, missing_approvers, label_names, mergeable,
@@ -216,8 +205,7 @@ async def _enrich_pr(client: httpx.AsyncClient, pr: dict) -> dict[str, Any]:
         "lgtm_count": lgtm_count,
         "approved": approved,
         "ci_state": ci_state,
-        "blockers": blockers,
-        "ready": len(blockers) == 0,
+        "blockers": [] if can_be_merged else blockers,
         "can_be_merged": can_be_merged,
     }
 
@@ -243,7 +231,7 @@ async def fetch_dashboard_data() -> dict[str, Any]:
             sig_groups.setdefault(sig, []).append(pr_data)
 
     for prs in sig_groups.values():
-        prs.sort(key=lambda p: (not p["ready"], p["updated_at"]), reverse=True)
+        prs.sort(key=lambda p: (not p["can_be_merged"], len(p["blockers"]), p["updated_at"]), reverse=True)
 
     return {
         "repo": REPO,
