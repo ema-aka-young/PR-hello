@@ -74,6 +74,8 @@ const SEVERITY_STYLES = {
   orange: 'bg-orange-900/50 text-orange-300 border border-orange-800',
   yellow: 'bg-yellow-900/50 text-yellow-300 border border-yellow-800',
   blue:   'bg-blue-900/50 text-blue-300 border border-blue-800',
+  purple: 'bg-purple-900/50 text-purple-300 border border-purple-800',
+  gray:   'bg-gray-800 text-gray-300 border border-gray-700',
   green:  'bg-emerald-900/50 text-emerald-300 border border-emerald-800',
 };
 
@@ -99,10 +101,12 @@ function sortByMergeReadiness(prs) {
 const STATUS_FILTERS = {
   can_merge:       p => p.can_be_merged,
   ready:           p => p.ready,
+  blocked:         p => p.blockers.some(b => b.key === 'wip' || b.key === 'hold' || b.key === 'has_conflicts'),
   ci_failing:      p => p.blockers.some(b => b.severity === 'red'),
   ci_pending:      p => p.blockers.some(b => b.severity === 'orange'),
   needs_lgtm:      p => p.blockers.some(b => b.key === 'needs_lgtm'),
   needs_approval:  p => p.blockers.some(b => b.key === 'needs_approval'),
+  needs_verified:  p => p.blockers.some(b => b.key === 'needs_verified'),
 };
 
 function timeAgo(dateStr) {
@@ -192,24 +196,22 @@ function renderSummaryStrip(data) {
   const allPrs = Object.values(data.sig_groups).flat();
   const uniquePrs = [...new Map(allPrs.map(p => [p.number, p])).values()];
 
-  const counts = {
-    can_merge:      uniquePrs.filter(STATUS_FILTERS.can_merge).length,
-    ready:          uniquePrs.filter(STATUS_FILTERS.ready).length,
-    ci_failing:     uniquePrs.filter(STATUS_FILTERS.ci_failing).length,
-    ci_pending:     uniquePrs.filter(STATUS_FILTERS.ci_pending).length,
-    needs_lgtm:     uniquePrs.filter(STATUS_FILTERS.needs_lgtm).length,
-    needs_approval: uniquePrs.filter(STATUS_FILTERS.needs_approval).length,
-  };
+  const counts = {};
+  for (const [k, fn] of Object.entries(STATUS_FILTERS)) {
+    counts[k] = uniquePrs.filter(fn).length;
+  }
 
   const active = (key) => activeStatusFilter === key ? 'ring-2 ring-white ring-offset-1 ring-offset-gray-950' : '';
 
   const items = [
-    { key: 'can_merge',      label: `${counts.can_merge} can be merged`,  style: 'bg-emerald-600 text-white font-semibold' },
-    { key: 'ready',          label: `${counts.ready} ready`,              style: SEVERITY_STYLES.green },
-    { key: 'ci_failing',     label: `${counts.ci_failing} CI failing`,    style: SEVERITY_STYLES.red },
-    { key: 'ci_pending',     label: `${counts.ci_pending} CI pending`,    style: SEVERITY_STYLES.orange },
-    { key: 'needs_lgtm',     label: `${counts.needs_lgtm} need LGTM`,    style: SEVERITY_STYLES.yellow },
-    { key: 'needs_approval', label: `${counts.needs_approval} need maintainer approval`, style: SEVERITY_STYLES.blue },
+    { key: 'can_merge',      label: `${counts.can_merge} can be merged`,       style: 'bg-emerald-600 text-white font-semibold' },
+    { key: 'ready',          label: `${counts.ready} ready`,                   style: SEVERITY_STYLES.green },
+    { key: 'blocked',        label: `${counts.blocked} blocked`,               style: SEVERITY_STYLES.gray },
+    { key: 'ci_failing',     label: `${counts.ci_failing} CI failing`,         style: SEVERITY_STYLES.red },
+    { key: 'ci_pending',     label: `${counts.ci_pending} CI pending`,         style: SEVERITY_STYLES.orange },
+    { key: 'needs_lgtm',     label: `${counts.needs_lgtm} need LGTM`,         style: SEVERITY_STYLES.yellow },
+    { key: 'needs_approval', label: `${counts.needs_approval} need approval`,  style: SEVERITY_STYLES.blue },
+    { key: 'needs_verified', label: `${counts.needs_verified} not verified`,   style: SEVERITY_STYLES.purple },
   ];
 
   strip.innerHTML = items.map(it =>

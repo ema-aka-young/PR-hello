@@ -124,10 +124,33 @@ def _extract_missing_approvers(check_runs: list[dict]) -> list[str]:
     return []
 
 
+BLOCKER_LABELS = {"wip", "hold", "has-conflicts"}
+
+
 def _compute_blockers(
-    lgtm_count: int, approved: bool, ci_state: str, missing_approvers: list[str],
+    lgtm_count: int,
+    approved: bool,
+    ci_state: str,
+    missing_approvers: list[str],
+    label_names: list[str],
+    mergeable: bool,
 ) -> list[dict[str, str]]:
     blockers = []
+
+    for lbl in label_names:
+        if lbl.lower() in BLOCKER_LABELS:
+            tag = lbl.lower()
+            if tag == "wip":
+                blockers.append({"key": "wip", "label": "Work in Progress", "severity": "gray"})
+            elif tag == "hold":
+                blockers.append({"key": "hold", "label": "On Hold", "severity": "gray"})
+            elif tag == "has-conflicts":
+                blockers.append({"key": "has_conflicts", "label": "Has Conflicts", "severity": "red"})
+
+    if not mergeable:
+        if not any(b["key"] == "has_conflicts" for b in blockers):
+            blockers.append({"key": "has_conflicts", "label": "Has Conflicts", "severity": "red"})
+
     if ci_state == "failure":
         blockers.append({"key": "ci_failing", "label": "CI Failing", "severity": "red"})
     elif ci_state == "pending":
@@ -145,6 +168,9 @@ def _compute_blockers(
         else:
             label = "Needs Maintainer Approval"
         blockers.append({"key": "needs_approval", "label": label, "severity": "blue"})
+
+    if "verified" not in [l.lower() for l in label_names]:
+        blockers.append({"key": "needs_verified", "label": "Not Verified", "severity": "purple"})
 
     return blockers
 
@@ -169,7 +195,10 @@ async def _enrich_pr(client: httpx.AsyncClient, pr: dict) -> dict[str, Any]:
     approved = _has_maintainer_approval(reviews, labels)
     ci_state = _resolve_ci_state(combined_status, check_runs)
     missing_approvers = _extract_missing_approvers(check_runs)
-    blockers = _compute_blockers(lgtm_count, approved, ci_state, missing_approvers)
+    mergeable = pr.get("mergeable", True) is not False
+    blockers = _compute_blockers(
+        lgtm_count, approved, ci_state, missing_approvers, label_names, mergeable,
+    )
     sigs = _extract_sigs(labels)
     can_be_merged = "can-be-merged" in label_names
 
