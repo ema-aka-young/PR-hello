@@ -7,15 +7,16 @@ A lightweight dashboard for tracking open PRs in `RedHatQE/openshift-virtualizat
 ```bash
 # 1. Install dependencies
 cd backend
-pip install -r requirements.txt
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
 
 # 2. Set your GitHub token
 cp ../.env.example ../.env
 # Edit .env and add your token
 
 # 3. Run
-export $(grep -v '^#' ../.env | xargs)
-uvicorn main:app --reload --port 8000
+WATCHFILES_FORCE_POLLING=true python -m uvicorn main:app --reload --port 8000
 ```
 
 Open http://localhost:8000 in your browser.
